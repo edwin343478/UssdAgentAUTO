@@ -24,6 +24,25 @@ class SecureStore(context: Context) {
 
     fun getAccessToken(): String? = prefs.getString("access_token", null)
 
+    fun saveRefreshToken(token: String) {
+        prefs.edit().putString("refresh_token", token).apply()
+    }
+
+    fun getRefreshToken(): String? = prefs.getString("refresh_token", null)
+
+    fun hasAuthSession(): Boolean {
+        val accessOk = !getAccessToken().isNullOrBlank()
+        val refreshOk = !getRefreshToken().isNullOrBlank()
+        return accessOk || refreshOk
+    }
+
+    fun clearAuthSession() {
+        prefs.edit()
+            .remove("access_token")
+            .remove("refresh_token")
+            .apply()
+    }
+
     fun clear() {
         prefs.edit().clear().apply()
     }
@@ -33,6 +52,7 @@ class SecureStore(context: Context) {
     }
 
     fun getDeviceId(): String? = prefs.getString("device_id", null)
+
     fun saveYasPin(pin: String) {
         prefs.edit().putString("yas_pin", pin).apply()
     }

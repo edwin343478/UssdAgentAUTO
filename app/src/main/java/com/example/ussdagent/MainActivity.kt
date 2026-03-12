@@ -8,14 +8,14 @@ import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.core.content.ContextCompat
 import androidx.compose.runtime.*
+import androidx.core.content.ContextCompat
 import com.example.ussdagent.data.repo.AuthRepository
 import com.example.ussdagent.data.repo.MonitoringRepository
 import com.example.ussdagent.data.store.SecureStore
 import com.example.ussdagent.ui.LoginScreen
-import com.example.ussdagent.ui.StatsScreen
 import com.example.ussdagent.ui.SetupScreen
+import com.example.ussdagent.ui.StatsScreen
 
 class MainActivity : ComponentActivity() {
 
@@ -27,14 +27,11 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // ✅ Keep screen on while app is visible (helps during monitoring & ops)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
-        // ✅ Helps wake/show if screen was off (minSdk supports this)
         setShowWhenLocked(true)
         setTurnScreenOn(true)
 
-        // Android 13+ requires runtime notification permission
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             val granted = ContextCompat.checkSelfPermission(
                 this,
@@ -53,6 +50,12 @@ class MainActivity : ComponentActivity() {
         setContent {
             var loggedIn by remember { mutableStateOf(authRepo.isLoggedIn()) }
             var setupDone by remember { mutableStateOf(store.hasSetup()) }
+
+            LaunchedEffect(loggedIn) {
+                if (loggedIn && store.getRefreshToken() != null) {
+                    authRepo.refreshSession()
+                }
+            }
 
             when {
                 !loggedIn -> {
@@ -82,9 +85,9 @@ class MainActivity : ComponentActivity() {
                         repo = monitoringRepo,
                         onLogout = {
                             com.example.ussdagent.engine.EngineController.stop(applicationContext)
-                            store.clear()
+                            store.clearAuthSession()
                             loggedIn = false
-                            setupDone = false
+                            setupDone = store.hasSetup()
                         },
                         appContext = applicationContext
                     )

@@ -6,7 +6,13 @@ import com.example.ussdagent.engine.CurrentJob
 import com.example.ussdagent.engine.CurrentJobState
 import com.example.ussdagent.engine.EngineState
 import kotlinx.coroutines.*
-import okhttp3.*
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
+import okhttp3.Response
+import okhttp3.WebSocket
+import okhttp3.WebSocketListener
 import okio.ByteString
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
@@ -18,40 +24,69 @@ class EngineWsClient(
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     private val client: OkHttpClient = OkHttpClient.Builder()
-        .pingInterval(20, TimeUnit.SECONDS) // WS ping frames (nice-to-have)
+        .pingInterval(20, TimeUnit.SECONDS)
         .build()
 
     private var stoppedByUser = false
     private var reconnectDelayMs = 1000L
     private var pingJob: Job? = null
+    private var reconnectJob: Job? = null
+
+    @Volatile
+    private var isConnecting = false
 
     fun start() {
         stoppedByUser = false
         reconnectDelayMs = 1000L
+        reconnectJob?.cancel()
+        reconnectJob = null
         connect()
     }
 
     private fun connect() {
-        val token = store.getAccessToken()
-        if (token.isNullOrBlank()) {
-            EngineState.set("No token: please login")
-            return
-        }
+        if (stoppedByUser) return
+        if (isConnecting) return
 
-        val deviceId = store.getDeviceId() ?: run {
+        val deviceId = store.getDeviceId()
+        if (deviceId.isNullOrBlank()) {
             EngineState.set("Missing device_id. Please login again.")
             return
         }
 
-        val url = "ws://192.168.0.50:8000/ws/engine?token=$token&device_id=$deviceId"
+        scope.launch {
+            if (stoppedByUser || isConnecting) return@launch
+            isConnecting = true
 
-        EngineState.set("Connecting WS...")
-        val request = Request.Builder().url(url).build()
-        ws = client.newWebSocket(request, listener)
+            try {
+                var token = store.getAccessToken()
+
+                if (token.isNullOrBlank()) {
+                    val refreshed = refreshAccessToken()
+                    token = store.getAccessToken()
+
+                    if (!refreshed || token.isNullOrBlank()) {
+                        scheduleReconnect("missing token", forceRefresh = true)
+                        return@launch
+                    }
+                }
+
+                val url = "ws://192.168.0.50:8000/ws/engine?token=$token&device_id=$deviceId"
+
+                EngineState.set("Connecting WS...")
+                val request = Request.Builder().url(url).build()
+                ws = client.newWebSocket(request, listener)
+            } finally {
+                isConnecting = false
+            }
+        }
     }
 
     fun stop() {
         stoppedByUser = true
+
+        reconnectJob?.cancel()
+        reconnectJob = null
+
         pingJob?.cancel()
         pingJob = null
 
@@ -62,10 +97,6 @@ class EngineWsClient(
         EngineState.set("Engine stopped")
     }
 
-    /**
-     * Send a job-scoped event to server (stored in job_events).
-     * Returns true if sent to WS.
-     */
     fun sendEvent(jobId: String, eventType: String, payload: Map<String, Any?> = emptyMap()): Boolean {
         val obj = JSONObject()
             .put("type", "event")
@@ -76,7 +107,6 @@ class EngineWsClient(
         return ws?.send(obj.toString()) ?: false
     }
 
-    // ✅ send SUCCESS ack (returns true if sent)
     fun sendSuccess(jobId: String, lockToken: String): Boolean {
         val msg = JSONObject()
             .put("type", "ack")
@@ -94,7 +124,6 @@ class EngineWsClient(
         return ok
     }
 
-    // ✅ send FAILED ack (returns true if sent)
     fun sendFailed(jobId: String, lockToken: String, reason: String): Boolean {
         val msg = JSONObject()
             .put("type", "ack")
@@ -128,11 +157,9 @@ class EngineWsClient(
         pingJob?.cancel()
         pingJob = scope.launch {
             while (isActive && !stoppedByUser) {
-                // Server expects TEXT JSON ping messages
                 val ping = JSONObject().put("type", "ping").toString()
                 try { webSocket.send(ping) } catch (_: Exception) {}
 
-                // Keeps updated_at fresh while operator is working
                 sendRunningHeartbeatIfNeeded(webSocket)
 
                 delay(25_000)
@@ -140,19 +167,80 @@ class EngineWsClient(
         }
     }
 
-    private fun scheduleReconnect(reason: String) {
+    private fun scheduleReconnect(reason: String, forceRefresh: Boolean = false) {
         if (stoppedByUser) return
 
+        reconnectJob?.cancel()
         EngineState.set("WS reconnecting soon... ($reason)")
-        scope.launch {
+
+        reconnectJob = scope.launch {
             delay(reconnectDelayMs)
             reconnectDelayMs = (reconnectDelayMs * 2).coerceAtMost(30_000L)
+
+            if (forceRefresh || store.getAccessToken().isNullOrBlank()) {
+                refreshAccessToken()
+            }
+
             connect()
         }
     }
 
+    private suspend fun refreshAccessToken(): Boolean = withContext(Dispatchers.IO) {
+        val refreshToken = store.getRefreshToken() ?: return@withContext false
+        val deviceId = store.getDeviceId() ?: return@withContext false
+
+        val body = JSONObject()
+            .put("refresh_token", refreshToken)
+            .put("device_id", deviceId)
+            .toString()
+            .toRequestBody("application/json; charset=utf-8".toMediaType())
+
+        val request = Request.Builder()
+            .url("http://192.168.0.50:8000/api/auth/refresh")
+            .post(body)
+            .build()
+
+        return@withContext try {
+            client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) {
+                    false
+                } else {
+                    val raw = response.body?.string().orEmpty()
+                    val obj = JSONObject(raw)
+                    val newAccessToken = obj.optString("access_token")
+                    if (newAccessToken.isBlank()) {
+                        false
+                    } else {
+                        store.saveAccessToken(newAccessToken)
+                        true
+                    }
+                }
+            }
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    private fun isAuthRelatedClose(code: Int, reason: String): Boolean {
+        return code == 1008 ||
+                reason.contains("auth", ignoreCase = true) ||
+                reason.contains("token", ignoreCase = true)
+    }
+
+    private fun isAuthRelatedFailure(t: Throwable, response: Response?): Boolean {
+        val rc = response?.code
+        val msg = t.message.orEmpty()
+        return rc == 401 ||
+                rc == 403 ||
+                msg.contains("auth", ignoreCase = true) ||
+                msg.contains("token", ignoreCase = true)
+    }
+
     private val listener = object : WebSocketListener() {
         override fun onOpen(webSocket: WebSocket, response: Response) {
+            reconnectJob?.cancel()
+            reconnectJob = null
+
             EngineState.set("WS Connected ✅")
             Log.d("EngineWsClient", "WS open: $response")
 
@@ -190,7 +278,6 @@ class EngineWsClient(
                         )
                     )
 
-                    // Telemetry
                     sendEvent(
                         jobId = jobId,
                         eventType = "JOB_RECEIVED",
@@ -223,18 +310,30 @@ class EngineWsClient(
         override fun onMessage(webSocket: WebSocket, bytes: ByteString) { /* ignore */ }
 
         override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+            ws = null
             pingJob?.cancel()
             pingJob = null
+
             EngineState.set("WS closed: $code $reason")
-            scheduleReconnect("closed $code")
+
+            scheduleReconnect(
+                reason = "closed $code",
+                forceRefresh = isAuthRelatedClose(code, reason)
+            )
         }
 
         override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+            ws = null
             pingJob?.cancel()
             pingJob = null
+
             EngineState.set("WS failed: ${t.message}")
             Log.e("EngineWsClient", "WS failure", t)
-            scheduleReconnect(t.message ?: "failure")
+
+            scheduleReconnect(
+                reason = t.message ?: "failure",
+                forceRefresh = isAuthRelatedFailure(t, response)
+            )
         }
     }
 }

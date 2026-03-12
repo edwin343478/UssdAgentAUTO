@@ -19,6 +19,7 @@ import androidx.core.app.NotificationCompat
 import com.example.ussdagent.R
 import com.example.ussdagent.data.store.SecureStore
 import com.example.ussdagent.engine.ws.EngineWsClient
+import com.example.ussdagent.engine.ws.EngineWsManager
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.collectLatest
 
@@ -46,6 +47,7 @@ class EngineService : Service() {
         ensureWifiLock()
 
         wsClient = EngineWsClient(SecureStore(applicationContext))
+        EngineWsManager.client = wsClient
         wsClient.start()
 
         serviceScope.launch {
@@ -62,9 +64,31 @@ class EngineService : Service() {
                 if (!pm.isInteractive) {
                     postFullScreenWake(job)
                 } else {
-                    Log.w("WakeDebug", "Screen is interactive; not posting FSI for jobId=${job.jobId}")
+                    launchJobWakerDirect(job)
                 }
             }
+        }
+    }
+
+    private fun launchJobWakerDirect(job: CurrentJob) {
+        val simSlot = job.simSlot ?: run {
+            Log.w("WakeDebug", "Abort wake: simSlot is null for jobId=${job.jobId}")
+            return
+        }
+
+        val ussd = ussdCodeForNetwork(job.network)
+
+        val intent = Intent(this, JobWakerActivity::class.java).apply {
+            putExtra(JobWakerActivity.EXTRA_JOB_ID, job.jobId)
+            putExtra(JobWakerActivity.EXTRA_USSD, ussd)
+            putExtra(JobWakerActivity.EXTRA_SIM_SLOT, simSlot)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+        }
+
+        try {
+            startActivity(intent)
+        } catch (_: Exception) {
+            postFullScreenWake(job)
         }
     }
 
@@ -78,6 +102,7 @@ class EngineService : Service() {
         if (::wsClient.isInitialized) {
             try { wsClient.stop() } catch (_: Exception) {}
         }
+        EngineWsManager.client = null
         releaseWifiLock()
         releaseCpuWakeLock()
         serviceScope.cancel()
@@ -114,7 +139,7 @@ class EngineService : Service() {
         )
 
         if (!canFsi) {
-            Log.e("WakeDebug", "Full‑screen intents are not allowed. User may need to grant permission.")
+            Log.e("WakeDebug", "Full-screen intents are not allowed. User may need to grant permission.")
             showFullScreenPermissionNotification()
             return
         }
@@ -216,8 +241,8 @@ class EngineService : Service() {
         )
         val notif = NotificationCompat.Builder(this, ENGINE_CHANNEL_ID)
             .setSmallIcon(R.mipmap.ic_launcher)
-            .setContentTitle("Full‑screen intent permission")
-            .setContentText("Tap to allow full‑screen alerts for reliable wake‑up")
+            .setContentTitle("Full-screen intent permission")
+            .setContentText("Tap to allow full-screen alerts for reliable wake-up")
             .setContentIntent(pi)
             .setAutoCancel(true)
             .build()

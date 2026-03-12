@@ -1,5 +1,6 @@
 package com.example.ussdagent.data.api
 
+import retrofit2.http.Body
 import retrofit2.http.Field
 import retrofit2.http.FormUrlEncoded
 import retrofit2.http.POST
@@ -12,13 +13,27 @@ data class LoginResponse(
     val role: String? = null
 )
 
+data class RefreshRequest(
+    val refresh_token: String,
+    val device_id: String
+)
+
+data class RefreshResponse(
+    val access_token: String,
+    val expires_in_seconds: Int? = null
+)
+
 interface AuthApi {
     @FormUrlEncoded
     @POST("api/auth/login")
     suspend fun login(
         @Field("username") username: String,
         @Field("password") password: String,
-        // FastAPI OAuth2 form often expects grant_type=password if provided
         @Field("grant_type") grantType: String = "password"
     ): LoginResponse
+
+    @POST("api/auth/refresh")
+    suspend fun refresh(
+        @Body body: RefreshRequest
+    ): RefreshResponse
 }

@@ -23,12 +23,12 @@
         android:usesCleartextTraffic="true">
 
         <service
-            android:name=".engine.EngineService"
+            android:name="com.example.ussdagent.engine.EngineService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
 
         <service
-            android:name=".ussd.UssdAccessibilityService"
+            android:name="com.example.ussdagent.ussd.UssdAccessibilityService"
             android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
             android:exported="false">
             <intent-filter>
@@ -40,7 +40,7 @@
         </service>
 
         <activity
-            android:name=".engine.JobWakerActivity"
+            android:name="com.example.ussdagent.engine.JobWakerActivity"
             android:exported="false"
             android:excludeFromRecents="true"
             android:launchMode="singleTask"
@@ -48,7 +48,7 @@
             android:theme="@android:style/Theme.Translucent.NoTitleBar.Fullscreen" />
 
         <activity
-            android:name=".MainActivity"
+            android:name="com.example.ussdagent.MainActivity"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

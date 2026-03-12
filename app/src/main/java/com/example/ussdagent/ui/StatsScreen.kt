@@ -52,7 +52,7 @@ fun StatsScreen(
 
     // Auto Dial toggle + status message
     var autoDialEnabled by remember { mutableStateOf(true) }
-    var lastAutoDialJobId by remember { mutableStateOf<String?>(null) }
+    var lastAutoDialDispatchKey by remember { mutableStateOf<String?>(null) }
     var autoDialStatusMsg by remember { mutableStateOf<String?>(null) }
 
     // SecureStore setup status
@@ -235,7 +235,9 @@ fun StatsScreen(
             return@LaunchedEffect
         }
         if (!autoDialEnabled) return@LaunchedEffect
-        if (lastAutoDialJobId == job.jobId) return@LaunchedEffect
+
+        val dispatchKey = "${job.jobId}:${job.lockToken}"
+        if (lastAutoDialDispatchKey == dispatchKey) return@LaunchedEffect
 
         val slot = job.simSlot
         if (slot == null || (slot != 1 && slot != 2)) {
@@ -281,7 +283,7 @@ fun StatsScreen(
         )
 
         autoDialStatusMsg = "Auto dial started: $ussd (SIM$slot)"
-        lastAutoDialJobId = job.jobId
+        lastAutoDialDispatchKey = dispatchKey
     }
 
     // Aggressive auto-timeout countdown + auto-fail once
@@ -308,7 +310,6 @@ fun StatsScreen(
                 payload = mapOf("timeout_seconds" to JOB_TIMEOUT_SECONDS)
             )
             EngineWsManager.client?.sendFailed(latest.jobId, latest.lockToken, "Operator timeout")
-            CurrentJobState.set(null)
             EngineState.set("Auto-failed job (timeout) ❌")
             load()
         }
@@ -527,7 +528,6 @@ fun StatsScreen(
                     onClick = {
                         EngineWsManager.client?.sendEvent(job.jobId, "JOB_COMPLETED_CLICKED")
                         EngineWsManager.client?.sendSuccess(job.jobId, job.lockToken)
-                        CurrentJobState.set(null)
                         load()
                     },
                     modifier = Modifier.weight(1f)
@@ -537,7 +537,6 @@ fun StatsScreen(
                     onClick = {
                         EngineWsManager.client?.sendEvent(job.jobId, "JOB_FAILED_CLICKED", mapOf("reason" to selectedFailReason))
                         EngineWsManager.client?.sendFailed(job.jobId, job.lockToken, selectedFailReason)
-                        CurrentJobState.set(null)
                         load()
                     },
                     modifier = Modifier.weight(1f)
