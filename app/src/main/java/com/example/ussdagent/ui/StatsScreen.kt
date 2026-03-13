@@ -17,9 +17,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.example.ussdagent.data.api.MonitoringSummary
+import com.example.ussdagent.data.local.PendingAckStore
 import com.example.ussdagent.data.repo.MonitoringRepository
 import com.example.ussdagent.data.repo.UnauthorizedException
+import com.example.ussdagent.data.store.ActiveDispatchHintStore
 import com.example.ussdagent.data.store.SecureStore
+import com.example.ussdagent.data.store.WsDiagnosticsSnapshot
+import com.example.ussdagent.data.store.WsDiagnosticsStore
 import com.example.ussdagent.engine.CurrentJobState
 import com.example.ussdagent.engine.EngineController
 import com.example.ussdagent.engine.EngineState
@@ -28,8 +32,10 @@ import com.example.ussdagent.telephony.SimManager
 import com.example.ussdagent.telephony.SimSlotInfo
 import com.example.ussdagent.ussd.UssdAutomationBus
 import com.example.ussdagent.ussd.UssdDialBus
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 private const val JOB_TIMEOUT_SECONDS = 1 * 60 // 8 minutes
 
@@ -54,6 +60,11 @@ fun StatsScreen(
     var autoDialEnabled by remember { mutableStateOf(true) }
     var lastAutoDialDispatchKey by remember { mutableStateOf<String?>(null) }
     var autoDialStatusMsg by remember { mutableStateOf<String?>(null) }
+
+    // Local persistence diagnostics
+    var unsyncedAckCount by remember { mutableStateOf(0) }
+    var recoveryHintCreatedAtMs by remember { mutableStateOf<Long?>(null) }
+    var wsDiagnostics by remember { mutableStateOf<WsDiagnosticsSnapshot?>(null) }
 
     // SecureStore setup status
     val store = remember { SecureStore(appContext) }
@@ -317,6 +328,22 @@ fun StatsScreen(
 
     LaunchedEffect(Unit) { load() }
 
+    LaunchedEffect(Unit) {
+        val pendingAckStore = PendingAckStore(appContext)
+        val hintStore = ActiveDispatchHintStore(appContext)
+        val wsStore = WsDiagnosticsStore(appContext)
+
+        while (true) {
+            unsyncedAckCount = withContext(Dispatchers.IO) {
+                pendingAckStore.getUnsyncedCount()
+            }
+            recoveryHintCreatedAtMs = hintStore.get()?.createdAtMs
+            wsDiagnostics = wsStore.get()
+
+            delay(5000)
+        }
+    }
+
     val scrollState = rememberScrollState()
 
     @Composable
@@ -383,6 +410,38 @@ fun StatsScreen(
         Text("Engine Status", style = MaterialTheme.typography.titleMedium)
         Spacer(Modifier.height(4.dp))
         Text(engineMsg)
+
+        Spacer(Modifier.height(12.dp))
+
+        Card(
+            colors = CardDefaults.cardColors(),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(modifier = Modifier.padding(12.dp)) {
+                Text("Local Persistence Diagnostics", style = MaterialTheme.typography.titleMedium)
+
+                Spacer(Modifier.height(6.dp))
+                Text("Unsynced pending ACKs: $unsyncedAckCount")
+
+                val hintAgeText = recoveryHintCreatedAtMs?.let {
+                    val mins = ((System.currentTimeMillis() - it) / 60000L).coerceAtLeast(0L)
+                    "$mins min ago"
+                } ?: "None"
+
+                Text("Last recovery hint: $hintAgeText")
+
+                val wsLine = wsDiagnostics?.let {
+                    val mins = ((System.currentTimeMillis() - it.updatedAtMs) / 60000L).coerceAtLeast(0L)
+                    if (it.detail.isNullOrBlank()) {
+                        "${it.status} ($mins min ago)"
+                    } else {
+                        "${it.status} ($mins min ago) — ${it.detail}"
+                    }
+                } ?: "Unknown"
+
+                Text("Last reconnect status: $wsLine")
+            }
+        }
 
         Spacer(Modifier.height(14.dp))
 

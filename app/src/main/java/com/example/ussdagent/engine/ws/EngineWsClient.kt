@@ -5,6 +5,7 @@ import android.content.Context
 import com.example.ussdagent.data.local.PendingAckStore
 import com.example.ussdagent.data.store.ActiveDispatchHintStore
 import com.example.ussdagent.data.store.SecureStore
+import com.example.ussdagent.data.store.WsDiagnosticsStore
 import com.example.ussdagent.engine.CurrentJob
 import com.example.ussdagent.engine.CurrentJobState
 import com.example.ussdagent.engine.EngineState
@@ -33,6 +34,7 @@ class EngineWsClient(
 
     private val pendingAckStore = PendingAckStore(appContext)
     private val activeDispatchHintStore = ActiveDispatchHintStore(appContext)
+    private val wsDiagnosticsStore = WsDiagnosticsStore(appContext)
 
     private var stoppedByUser = false
     private var reconnectDelayMs = 1000L
@@ -210,6 +212,11 @@ class EngineWsClient(
 
         reconnectJob?.cancel()
         EngineState.set("WS reconnecting soon... ($reason)")
+        wsDiagnosticsStore.saveReconnectScheduled(
+            reason = reason,
+            delayMs = reconnectDelayMs,
+            forceRefresh = forceRefresh
+        )
 
         reconnectJob = scope.launch {
             delay(reconnectDelayMs)
@@ -222,7 +229,6 @@ class EngineWsClient(
             connect()
         }
     }
-
 
     private fun flushPendingAcks(webSocket: WebSocket) {
         pendingAckSyncJob?.cancel()
@@ -262,7 +268,6 @@ class EngineWsClient(
             }
         }
     }
-
 
     private suspend fun refreshAccessToken(): Boolean = withContext(Dispatchers.IO) {
         val refreshToken = store.getRefreshToken() ?: return@withContext false
@@ -321,6 +326,7 @@ class EngineWsClient(
             reconnectJob = null
 
             EngineState.set("WS Connected ✅")
+            wsDiagnosticsStore.saveConnected()
             Log.d("EngineWsClient", "WS open: $response")
 
             reconnectDelayMs = 1000L
@@ -401,6 +407,7 @@ class EngineWsClient(
             pendingAckSyncJob = null
 
             EngineState.set("WS closed: $code $reason")
+            wsDiagnosticsStore.saveClosed(code, reason)
 
             scheduleReconnect(
                 reason = "closed $code",
@@ -416,8 +423,8 @@ class EngineWsClient(
             pendingAckSyncJob?.cancel()
             pendingAckSyncJob = null
 
-
             EngineState.set("WS failed: ${t.message}")
+            wsDiagnosticsStore.saveFailed(t.message)
             Log.e("EngineWsClient", "WS failure", t)
 
             scheduleReconnect(

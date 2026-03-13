@@ -37,6 +37,8 @@ class EngineService : Service() {
     private var lastWakeAttemptMs: Long = 0L
     private var batteryWarningShown = false
 
+    private val STALE_HINT_AGE_MS = 30 * 60 * 1000L // 30 minutes
+
     override fun onCreate() {
         super.onCreate()
         nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
@@ -52,7 +54,12 @@ class EngineService : Service() {
 
         val dispatchHint = ActiveDispatchHintStore(applicationContext).get()
         if (dispatchHint != null) {
-            EngineState.set("Recovery: previous dispatch may have been interrupted")
+            val ageMs = System.currentTimeMillis() - dispatchHint.createdAtMs
+            if (ageMs > STALE_HINT_AGE_MS) {
+                EngineState.set("Recovery: old dispatch hint found (manual review)")
+            } else {
+                EngineState.set("Recovery: previous dispatch may have been interrupted")
+            }
         }
 
         wsClient.start()
