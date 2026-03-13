@@ -1,6 +1,9 @@
 package com.example.ussdagent.engine.ws
 
 import android.util.Log
+import android.content.Context
+import com.example.ussdagent.data.local.PendingAckStore
+import com.example.ussdagent.data.store.ActiveDispatchHintStore
 import com.example.ussdagent.data.store.SecureStore
 import com.example.ussdagent.engine.CurrentJob
 import com.example.ussdagent.engine.CurrentJobState
@@ -18,6 +21,7 @@ import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 
 class EngineWsClient(
+    private val appContext: Context,
     private val store: SecureStore
 ) {
     private var ws: WebSocket? = null
@@ -27,10 +31,15 @@ class EngineWsClient(
         .pingInterval(20, TimeUnit.SECONDS)
         .build()
 
+    private val pendingAckStore = PendingAckStore(appContext)
+    private val activeDispatchHintStore = ActiveDispatchHintStore(appContext)
+
     private var stoppedByUser = false
     private var reconnectDelayMs = 1000L
     private var pingJob: Job? = null
     private var reconnectJob: Job? = null
+
+    private var pendingAckSyncJob: Job? = null
 
     @Volatile
     private var isConnecting = false
@@ -90,6 +99,9 @@ class EngineWsClient(
         pingJob?.cancel()
         pingJob = null
 
+        pendingAckSyncJob?.cancel()
+        pendingAckSyncJob = null
+
         try { ws?.cancel() } catch (_: Exception) {}
         ws = null
 
@@ -108,6 +120,13 @@ class EngineWsClient(
     }
 
     fun sendSuccess(jobId: String, lockToken: String): Boolean {
+        pendingAckStore.upsertPendingAck(
+            jobId = jobId,
+            lockToken = lockToken,
+            finalStatus = "SUCCESS",
+            detail = null
+        )
+
         val msg = JSONObject()
             .put("type", "ack")
             .put("job_id", jobId)
@@ -116,6 +135,12 @@ class EngineWsClient(
 
         val ok = ws?.send(msg.toString()) ?: false
         if (ok) {
+            pendingAckStore.markSynced(
+                jobId = jobId,
+                lockToken = lockToken,
+                finalStatus = "SUCCESS"
+            )
+            activeDispatchHintStore.clear()
             EngineState.set("Sent SUCCESS for $jobId ✅")
             CurrentJobState.set(null)
         } else {
@@ -125,6 +150,13 @@ class EngineWsClient(
     }
 
     fun sendFailed(jobId: String, lockToken: String, reason: String): Boolean {
+        pendingAckStore.upsertPendingAck(
+            jobId = jobId,
+            lockToken = lockToken,
+            finalStatus = "FAILED",
+            detail = reason
+        )
+
         val msg = JSONObject()
             .put("type", "ack")
             .put("job_id", jobId)
@@ -134,6 +166,12 @@ class EngineWsClient(
 
         val ok = ws?.send(msg.toString()) ?: false
         if (ok) {
+            pendingAckStore.markSynced(
+                jobId = jobId,
+                lockToken = lockToken,
+                finalStatus = "FAILED"
+            )
+            activeDispatchHintStore.clear()
             EngineState.set("Sent FAILED for $jobId ❌")
             CurrentJobState.set(null)
         } else {
@@ -184,6 +222,47 @@ class EngineWsClient(
             connect()
         }
     }
+
+
+    private fun flushPendingAcks(webSocket: WebSocket) {
+        pendingAckSyncJob?.cancel()
+
+        pendingAckSyncJob = scope.launch {
+            val pending = pendingAckStore.getUnsynced(limit = 100)
+            if (pending.isEmpty()) return@launch
+
+            for (item in pending) {
+                if (!isActive || stoppedByUser) break
+
+                val msg = JSONObject()
+                    .put("type", "ack")
+                    .put("job_id", item.jobId)
+                    .put("lock_token", item.lockToken)
+                    .put("status", item.finalStatus)
+
+                if (item.finalStatus == "FAILED" && !item.detail.isNullOrBlank()) {
+                    msg.put("detail", item.detail)
+                }
+
+                val sent = try {
+                    webSocket.send(msg.toString())
+                } catch (_: Exception) {
+                    false
+                }
+
+                if (sent) {
+                    pendingAckStore.markSynced(
+                        jobId = item.jobId,
+                        lockToken = item.lockToken,
+                        finalStatus = item.finalStatus
+                    )
+                } else {
+                    break
+                }
+            }
+        }
+    }
+
 
     private suspend fun refreshAccessToken(): Boolean = withContext(Dispatchers.IO) {
         val refreshToken = store.getRefreshToken() ?: return@withContext false
@@ -246,6 +325,7 @@ class EngineWsClient(
 
             reconnectDelayMs = 1000L
             startTextPingLoop(webSocket)
+            flushPendingAcks(webSocket)
         }
 
         override fun onMessage(webSocket: WebSocket, text: String) {
@@ -277,7 +357,10 @@ class EngineWsClient(
                             simSlot = simSlot
                         )
                     )
-
+                    activeDispatchHintStore.save(
+                        jobId = jobId,
+                        lockToken = lockToken
+                    )
                     sendEvent(
                         jobId = jobId,
                         eventType = "JOB_RECEIVED",
@@ -314,6 +397,9 @@ class EngineWsClient(
             pingJob?.cancel()
             pingJob = null
 
+            pendingAckSyncJob?.cancel()
+            pendingAckSyncJob = null
+
             EngineState.set("WS closed: $code $reason")
 
             scheduleReconnect(
@@ -326,6 +412,10 @@ class EngineWsClient(
             ws = null
             pingJob?.cancel()
             pingJob = null
+
+            pendingAckSyncJob?.cancel()
+            pendingAckSyncJob = null
+
 
             EngineState.set("WS failed: ${t.message}")
             Log.e("EngineWsClient", "WS failure", t)

@@ -18,6 +18,7 @@ import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.example.ussdagent.R
 import com.example.ussdagent.data.store.SecureStore
+import com.example.ussdagent.data.store.ActiveDispatchHintStore
 import com.example.ussdagent.engine.ws.EngineWsClient
 import com.example.ussdagent.engine.ws.EngineWsManager
 import kotlinx.coroutines.*
@@ -46,8 +47,14 @@ class EngineService : Service() {
         ensureCpuWakeLock()
         ensureWifiLock()
 
-        wsClient = EngineWsClient(SecureStore(applicationContext))
+        wsClient = EngineWsClient(applicationContext, SecureStore(applicationContext))
         EngineWsManager.client = wsClient
+
+        val dispatchHint = ActiveDispatchHintStore(applicationContext).get()
+        if (dispatchHint != null) {
+            EngineState.set("Recovery: previous dispatch may have been interrupted")
+        }
+
         wsClient.start()
 
         serviceScope.launch {
