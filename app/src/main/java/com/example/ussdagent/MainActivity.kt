@@ -64,7 +64,6 @@ class MainActivity : ComponentActivity() {
                             val result = authRepo.login(user, pass)
                             val ok = result.isSuccess
                             if (ok) {
-                                store.saveDeviceId("84fd0dd0-4583-4d60-a45e-7e4b962be2b9") // dev shortcut
                                 loggedIn = true
                                 setupDone = store.hasSetup()
                             }

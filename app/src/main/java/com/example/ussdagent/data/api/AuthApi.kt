@@ -10,7 +10,8 @@ data class LoginResponse(
     val token_type: String,
     val refresh_token: String? = null,
     val username: String? = null,
-    val role: String? = null
+    val role: String? = null,
+    val device_id: String? = null
 )
 
 data class RefreshRequest(
@@ -20,6 +21,7 @@ data class RefreshRequest(
 
 data class RefreshResponse(
     val access_token: String,
+    val refresh_token: String? = null,
     val expires_in_seconds: Int? = null
 )
 
@@ -29,7 +31,9 @@ interface AuthApi {
     suspend fun login(
         @Field("username") username: String,
         @Field("password") password: String,
-        @Field("grant_type") grantType: String = "password"
+        @Field("grant_type") grantType: String = "password",
+        @Field("device_id") deviceId: String,
+        @Field("device_name") deviceName: String = "Unknown Device"
     ): LoginResponse
 
     @POST("api/auth/refresh")
